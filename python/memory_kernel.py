@@ -1,13 +1,15 @@
 """
-Memory Kernel Module (v2.6.6 - Improved)
+Memory Kernel Module (v2.6.6 - Adaptive Threshold Version)
 
-This module implements an improved Memory Kernel designed for
-stabilizing plaquette observables in lattice gauge theory simulations.
+This version introduces an adaptive large_diff_threshold that automatically
+adjusts based on the current noise level (standard deviation) of the signal.
+This makes the kernel more robust across different noise environments and
+allows smaller Phase Jumps to trigger dynamic adaptation when appropriate.
 
-Key improvements in this version:
-- Raised large_diff_threshold to reduce false phase jump detection
-- Added simple dynamic adaptation (temporary lower decay) when 
-  sustained large changes are detected (Phase Jump response)
+Key improvements:
+- Adaptive threshold using running standard deviation (Welford)
+- Minimum floor for large_diff_threshold to prevent over-sensitivity
+- Dynamic decay adaptation when sustained large changes are detected
 
 Author: Won Shik Paik
 """
@@ -18,17 +20,19 @@ from typing import List, Optional
 
 class MemoryKernel:
     """
-    Memory Kernel for plaquette stabilization (v2.6.6 improved version).
+    Memory Kernel for plaquette stabilization with adaptive threshold.
     """
 
     def __init__(self,
                  memory_length: int = 20,
                  decay_factor: float = 0.85,
                  outlier_threshold: float = 0.008,
-                 large_diff_threshold: float = 0.007,      # ← 변경됨 (0.003 → 0.007)
+                 large_diff_threshold: float = 0.007,
+                 min_large_diff_threshold: float = 0.004,      # ← 새로 추가 (하한선)
+                 adaptive_threshold_factor: float = 2.8,       # ← 새로 추가 (표준편차 배수)
                  small_diff_threshold: float = 0.0005,
                  min_data_points: int = 5,
-                 phase_jump_adaptation_steps: int = 8):    # ← 새로 추가
+                 phase_jump_adaptation_steps: int = 8):
         """
         Initialize Memory Kernel parameters.
         """
@@ -36,6 +40,8 @@ class MemoryKernel:
         self.decay_factor = decay_factor
         self.outlier_threshold = outlier_threshold
         self.large_diff_threshold = large_diff_threshold
+        self.min_large_diff_threshold = min_large_diff_threshold
+        self.adaptive_threshold_factor = adaptive_threshold_factor
         self.small_diff_threshold = small_diff_threshold
         self.min_data_points = min_data_points
         self.phase_jump_adaptation_steps = phase_jump_adaptation_steps
@@ -47,7 +53,20 @@ class MemoryKernel:
         self.mean: float = 0.0
         self.variance: float = 0.0
         self.smoothed_outputs: List[float] = []
-        self.adaptation_counter: int = 0   # Phase Jump 적응용 카운터
+        self.adaptation_counter: int = 0
+
+    def _get_dynamic_large_diff_threshold(self) -> float:
+        """
+        Calculate dynamic large_diff_threshold based on current noise level.
+        """
+        if self.count < 10:
+            return self.large_diff_threshold
+
+        current_std = np.sqrt(self.variance / self.count)
+        dynamic_threshold = current_std * self.adaptive_threshold_factor
+
+        # Apply minimum floor
+        return max(self.min_large_diff_threshold, dynamic_threshold)
 
     def _update_welford(self, new_value: float):
         """Update running mean and variance using Welford's method."""
@@ -76,15 +95,15 @@ class MemoryKernel:
             return raw_value
 
         diff = abs(raw_value - self.last_output) if self.last_output is not None else 0.0
+        dynamic_large_diff = self._get_dynamic_large_diff_threshold()
 
         # === Outlier handling (Spike) ===
-        if abs(raw_value - self.mean) > self.outlier_threshold or diff > self.large_diff_threshold:
+        if abs(raw_value - self.mean) > self.outlier_threshold or diff > dynamic_large_diff:
             damping = 0.15
             new_output = self.last_output * (1 - damping) + raw_value * damping
         else:
             # === Dynamic Adaptation for Phase Jump ===
-            if diff > self.large_diff_threshold:
-                # 큰 변화가 지속되면 decay를 일시적으로 낮춤 (빠른 적응)
+            if diff > dynamic_large_diff:
                 current_decay = max(0.40, self.decay_factor - 0.35)
                 self.adaptation_counter = self.phase_jump_adaptation_steps
             elif self.adaptation_counter > 0:
@@ -123,7 +142,6 @@ class MemoryKernel:
 
 
 if __name__ == "__main__":
-    # Simple self-test
     kernel = MemoryKernel()
     test_values = [0.852, 0.853, 0.851, 0.860, 0.852, 0.853]
     for val in test_values:
