@@ -1,12 +1,13 @@
-
 """
-Memory Kernel Module (v2.6.6)
+Memory Kernel Module (v2.6.6 - Improved)
 
 This module implements an improved Memory Kernel designed for
 stabilizing plaquette observables in lattice gauge theory simulations.
-It features Welford's online algorithm for numerical stability,
-outlier (spike) detection with strong damping, and adaptation to
-sudden mean shifts (phase jump-like behavior).
+
+Key improvements in this version:
+- Raised large_diff_threshold to reduce false phase jump detection
+- Added simple dynamic adaptation (temporary lower decay) when 
+  sustained large changes are detected (Phase Jump response)
 
 Author: Won Shik Paik
 """
@@ -17,39 +18,19 @@ from typing import List, Optional
 
 class MemoryKernel:
     """
-    Memory Kernel for plaquette stabilization.
-
-    Key improvements in v2.6.6:
-    - Welford's online algorithm for stable mean and variance tracking
-    - Explicit warm-up phase
-    - Strong damping for outliers and large fluctuations
-    - Better adaptation to sudden state changes
+    Memory Kernel for plaquette stabilization (v2.6.6 improved version).
     """
 
     def __init__(self,
                  memory_length: int = 20,
                  decay_factor: float = 0.85,
                  outlier_threshold: float = 0.008,
-                 large_diff_threshold: float = 0.003,
+                 large_diff_threshold: float = 0.007,      # ← 변경됨 (0.003 → 0.007)
                  small_diff_threshold: float = 0.0005,
-                 min_data_points: int = 5):
+                 min_data_points: int = 5,
+                 phase_jump_adaptation_steps: int = 8):    # ← 새로 추가
         """
         Initialize Memory Kernel parameters.
-
-        Parameters
-        ----------
-        memory_length : int
-            Size of the history buffer.
-        decay_factor : float
-            Smoothing strength (higher = more memory effect).
-        outlier_threshold : float
-            Threshold to detect large outliers (spikes).
-        large_diff_threshold : float
-            Threshold for detecting significant sudden changes.
-        small_diff_threshold : float
-            Threshold for small changes (reserved for future extension).
-        min_data_points : int
-            Minimum steps required before full smoothing activates.
         """
         self.memory_length = memory_length
         self.decay_factor = decay_factor
@@ -57,6 +38,7 @@ class MemoryKernel:
         self.large_diff_threshold = large_diff_threshold
         self.small_diff_threshold = small_diff_threshold
         self.min_data_points = min_data_points
+        self.phase_jump_adaptation_steps = phase_jump_adaptation_steps
 
         # Internal states
         self.history: List[float] = []
@@ -65,6 +47,7 @@ class MemoryKernel:
         self.mean: float = 0.0
         self.variance: float = 0.0
         self.smoothed_outputs: List[float] = []
+        self.adaptation_counter: int = 0   # Phase Jump 적응용 카운터
 
     def _update_welford(self, new_value: float):
         """Update running mean and variance using Welford's method."""
@@ -80,16 +63,6 @@ class MemoryKernel:
     def apply(self, raw_value: float) -> float:
         """
         Apply memory kernel to a raw value and return smoothed result.
-
-        Parameters
-        ----------
-        raw_value : float
-            Raw plaquette value at current time step.
-
-        Returns
-        -------
-        float
-            Smoothed output after applying memory effects.
         """
         self.history.append(raw_value)
         if len(self.history) > self.memory_length:
@@ -104,13 +77,24 @@ class MemoryKernel:
 
         diff = abs(raw_value - self.last_output) if self.last_output is not None else 0.0
 
-        # Outlier / Large fluctuation handling
+        # === Outlier handling (Spike) ===
         if abs(raw_value - self.mean) > self.outlier_threshold or diff > self.large_diff_threshold:
             damping = 0.15
             new_output = self.last_output * (1 - damping) + raw_value * damping
         else:
-            new_output = (self.decay_factor * self.last_output +
-                          (1 - self.decay_factor) * raw_value)
+            # === Dynamic Adaptation for Phase Jump ===
+            if diff > self.large_diff_threshold:
+                # 큰 변화가 지속되면 decay를 일시적으로 낮춤 (빠른 적응)
+                current_decay = max(0.40, self.decay_factor - 0.35)
+                self.adaptation_counter = self.phase_jump_adaptation_steps
+            elif self.adaptation_counter > 0:
+                current_decay = max(0.45, self.decay_factor - 0.25)
+                self.adaptation_counter -= 1
+            else:
+                current_decay = self.decay_factor
+
+            new_output = (current_decay * self.last_output +
+                          (1 - current_decay) * raw_value)
 
         self.last_output = new_output
         self.smoothed_outputs.append(new_output)
@@ -122,3 +106,26 @@ class MemoryKernel:
         """Return current statistical summary."""
         return {
             "count": self.count,
+            "mean": self.mean,
+            "variance": self.variance / self.count if self.count > 1 else 0.0,
+            "final_output": self.last_output
+        }
+
+    def reset(self):
+        """Reset all internal states."""
+        self.history.clear()
+        self.smoothed_outputs.clear()
+        self.last_output = None
+        self.count = 0
+        self.mean = 0.0
+        self.variance = 0.0
+        self.adaptation_counter = 0
+
+
+if __name__ == "__main__":
+    # Simple self-test
+    kernel = MemoryKernel()
+    test_values = [0.852, 0.853, 0.851, 0.860, 0.852, 0.853]
+    for val in test_values:
+        out = kernel.apply(val)
+        print(f"Raw: {val:.6f} -> Smoothed: {out:.6f}")
