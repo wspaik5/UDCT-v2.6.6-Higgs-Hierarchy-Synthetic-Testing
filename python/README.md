@@ -1,35 +1,28 @@
-# UDCT v2.6.6 - Synthetic Testing (Python Module)
+# UDCT v2.6.6 - Adaptive Threshold Memory Kernel (Python)
 
-This folder contains the core Python modules for synthetic plaquette testing of the Memory Kernel, developed as part of UDCT v2.6.6 research on **Higgs Hierarchy Stabilization**.
+This folder contains the Python implementation of the **Adaptive Threshold Memory Kernel** developed for **UDCT v2.6.6**.
 
-## Purpose
+## Overview
 
-These modules are designed to test the robustness and adaptation capability of the Memory Kernel under controlled synthetic conditions before integrating with full Monte Carlo simulations. This approach allows systematic validation of:
+Version 2.6.6 introduces significant improvements to the Memory Kernel:
 
-- Outlier (spike) detection and damping
-- Response to sudden mean shifts (Phase Jump-like behavior)
-- Long-term numerical stability
+- **Adaptive Detection Threshold**: The Phase Jump detection threshold is now dynamically computed using Welford’s running standard deviation. This allows the kernel to automatically adjust sensitivity according to the current noise level.
+- **Dynamic Decay Adaptation**: When a sustained Phase Jump is detected, the kernel temporarily reduces the decay factor to converge faster to the new state (typically within 5–6 steps instead of \~15 steps).
+- **Improved Balance**: Maintains strong outlier rejection while significantly improving responsiveness to genuine state changes.
+
+These features are particularly useful for long-running Monte Carlo simulations in the context of **Higgs hierarchy stabilization via geometric back-reaction**.
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `memory_kernel.py` | Improved Memory Kernel implementation using Welford's online algorithm with strong outlier damping and adaptation to state changes. |
-| `synthetic_plaquette_generator.py` | Flexible generator for creating synthetic plaquette time series with controllable noise, autocorrelation, artificial spikes, and phase jumps. |
-| `README.md` | This file. |
+| `memory_kernel.py` | Core `MemoryKernel` class with adaptive threshold and dynamic decay (v2.6.6) |
+| `reproduce_v2.6.6_results.py` | Script to reproduce key results from the technical note |
+| `README.md` | This file |
 
-## Usage Example
+## Quick Start
 
-```python
-from memory_kernel import MemoryKernel
-from synthetic_plaquette_generator import SyntheticPlaquetteGenerator
+### 1. Run the reproduction script
 
-# Generate synthetic data with spike and phase jump
-gen = SyntheticPlaquetteGenerator(n_steps=128, noise_level=0.005)
-gen.generate_baseline()
-gen.add_spikes(positions=[40], magnitudes=[0.008])
-gen.add_phase_jump(position=80, delta_mean=0.003)
-
-# Apply Memory Kernel
-kernel = MemoryKernel()
-smoothed = [kernel.apply(val) for val in gen.get_sequence()]
+```bash
+python reproduce_v2.6.6_results.py
