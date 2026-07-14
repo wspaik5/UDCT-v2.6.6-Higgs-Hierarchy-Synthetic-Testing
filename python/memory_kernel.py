@@ -1,119 +1,106 @@
+#!/usr/bin/env python3
 """
-Memory Kernel Module (v2.6.6 - Final Adaptive Threshold Version)
+UDCT v2.6.6 - Adaptive Threshold Memory Kernel
+for Higgs Hierarchy Stabilization
 
-Final version with lowered min_large_diff_threshold for better
-sensitivity to small Phase Jumps in low-noise environments.
+This module implements an improved Memory Kernel with:
+- Adaptive detection threshold based on Welford's running standard deviation
+- Dynamic Decay Adaptation for faster response to sustained Phase Jumps
+- Median-based outlier rejection
+- Warm-up phase
+- Numerically stable statistics via Welford's algorithm
 
 Author: Won Shik Paik
+Email: wspaik5@gmail.com
+
+================================================================================
+Copyright and Citation Requirement
+================================================================================
+
+This software is provided for academic and non-commercial research use only.
+
+If you use this code (or any derivative work) in your research, publication,
+presentation, or software, you **must cite** the following technical note:
+
+    Won Shik Paik,
+    "UDCT v2.6.6: Higgs Hierarchy – Adaptive Threshold Memory Kernel
+     Technical Note",
+    July 2026.
+    Zenodo DOI: (to be assigned upon upload)
+
+Commercial use or redistribution requires prior written permission from the author.
+
+This code is distributed in the hope that it will be useful for scientific
+research, but WITHOUT ANY WARRANTY.
+================================================================================
 """
 
-import numpy as np
 from typing import List, Optional
+import statistics
 
 
 class MemoryKernel:
-    def __init__(self,
-                 memory_length: int = 20,
-                 decay_factor: float = 0.85,
-                 outlier_threshold: float = 0.008,
-                 large_diff_threshold: float = 0.007,
-                 min_large_diff_threshold: float = 0.0025,      # ← 변경됨
-                 adaptive_threshold_factor: float = 2.8,
-                 small_diff_threshold: float = 0.0005,
-                 min_data_points: int = 5,
-                 phase_jump_adaptation_steps: int = 8):
+    """
+    Memory Kernel with Adaptive Threshold for Higgs Hierarchy Stabilization (v2.6.6).
 
-        self.memory_length = memory_length
+    Key improvements over v2.6.5:
+        - Dynamic Large Diff Threshold computed from running standard deviation
+        - Temporary reduction of decay_factor when sustained Phase Jump is detected
+        - Better balance between stability and responsiveness
+    """
+
+    def __init__(
+        self,
+        decay_factor: float = 0.85,
+        memory_length: int = 20,
+        min_large_diff_threshold: float = 0.0025,
+        adaptive_threshold_factor: float = 2.8,
+        phase_jump_adaptation_steps: int = 8
+    ):
+        """
+        Initialize the Adaptive Memory Kernel.
+
+        Args:
+            decay_factor: Base exponential decay factor (default 0.85)
+            memory_length: Length of history buffer for median calculation
+            min_large_diff_threshold: Minimum floor for dynamic threshold
+            adaptive_threshold_factor: Multiplier for std → threshold
+            phase_jump_adaptation_steps: How many steps to keep reduced decay after Phase Jump
+        """
+        if not 0 < decay_factor < 1:
+            raise ValueError("decay_factor must be between 0 and 1")
+        if memory_length < 1:
+            raise ValueError("memory_length must be at least 1")
+
         self.decay_factor = decay_factor
-        self.outlier_threshold = outlier_threshold
-        self.large_diff_threshold = large_diff_threshold
+        self.memory_length = memory_length
         self.min_large_diff_threshold = min_large_diff_threshold
         self.adaptive_threshold_factor = adaptive_threshold_factor
-        self.small_diff_threshold = small_diff_threshold
-        self.min_data_points = min_data_points
         self.phase_jump_adaptation_steps = phase_jump_adaptation_steps
 
+        # Internal state
         self.history: List[float] = []
         self.last_output: Optional[float] = None
-        self.count: int = 0
-        self.mean: float = 0.0
-        self.variance: float = 0.0
-        self.smoothed_outputs: List[float] = []
-        self.adaptation_counter: int = 0
 
-    def _get_dynamic_large_diff_threshold(self) -> float:
-        if self.count < 10:
-            return self.large_diff_threshold
-        current_std = np.sqrt(self.variance / self.count)
-        dynamic_threshold = current_std * self.adaptive_threshold_factor
-        return max(self.min_large_diff_threshold, dynamic_threshold)
+        # Warm-up control
+        self.min_data_points: int = 3
 
-    def _update_welford(self, new_value: float):
-        self.count += 1
-        if self.count == 1:
-            self.mean = new_value
-            self.variance = 0.0
-        else:
-            old_mean = self.mean
-            self.mean += (new_value - old_mean) / self.count
-            self.variance += (new_value - old_mean) * (new_value - self.mean)
+        # Adaptive state
+        self._phase_jump_counter: int = 0
 
-    def apply(self, raw_value: float) -> float:
-        self.history.append(raw_value)
-        if len(self.history) > self.memory_length:
-            self.history.pop(0)
+        # Outlier threshold (fixed for stability)
+        self.outlier_threshold: float = 0.008
 
-        if len(self.history) < self.min_data_points:
-            self.last_output = raw_value
-            self.smoothed_outputs.append(raw_value)
-            self._update_welford(raw_value)
-            return raw_value
+        # Welford's online statistics
+        self._count: int = 0
+        self._mean: float = 0.0
+        self._M2: float = 0.0
 
-        diff = abs(raw_value - self.last_output) if self.last_output is not None else 0.0
-        dynamic_large_diff = self._get_dynamic_large_diff_threshold()
+    def set_min_data_points(self, min_points: int) -> None:
+        """
+        Set the number of initial data points for the warm-up phase.
 
-        if abs(raw_value - self.mean) > self.outlier_threshold or diff > dynamic_large_diff:
-            damping = 0.15
-            new_output = self.last_output * (1 - damping) + raw_value * damping
-        else:
-            if diff > dynamic_large_diff:
-                current_decay = max(0.40, self.decay_factor - 0.35)
-                self.adaptation_counter = self.phase_jump_adaptation_steps
-            elif self.adaptation_counter > 0:
-                current_decay = max(0.45, self.decay_factor - 0.25)
-                self.adaptation_counter -= 1
-            else:
-                current_decay = self.decay_factor
-
-            new_output = (current_decay * self.last_output +
-                          (1 - current_decay) * raw_value)
-
-        self.last_output = new_output
-        self.smoothed_outputs.append(new_output)
-        self._update_welford(raw_value)
-        return new_output
-
-    def get_statistics(self) -> dict:
-        return {
-            "count": self.count,
-            "mean": self.mean,
-            "variance": self.variance / self.count if self.count > 1 else 0.0,
-            "final_output": self.last_output
-        }
-
-    def reset(self):
-        self.history.clear()
-        self.smoothed_outputs.clear()
-        self.last_output = None
-        self.count = 0
-        self.mean = 0.0
-        self.variance = 0.0
-        self.adaptation_counter = 0
-
-
-if __name__ == "__main__":
-    kernel = MemoryKernel()
-    test_values = [0.852, 0.853, 0.851, 0.860, 0.852, 0.853]
-    for val in test_values:
-        out = kernel.apply(val)
-        print(f"Raw: {val:.6f} -> Smoothed: {out:.6f}")
+        During the warm-up phase, the kernel returns raw values without applying
+        any smoothing. This prevents artificial bias during the initial transient
+        regime of a simulation.
+        """
