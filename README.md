@@ -1,5 +1,5 @@
 
-> **Note**: The technical documentation for v2.6.6 is available in the [`docs/`](docs/) folder.
+> Technical documentation for v2.6.6, including the draft technical note, is available in the [`docs/`](docs/) folder.
 
 
 ---
